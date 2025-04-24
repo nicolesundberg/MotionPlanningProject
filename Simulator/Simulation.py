@@ -18,6 +18,7 @@ FPS = 60
 # Colors
 WHITE = (255, 255, 255)
 RED = (200, 0, 0)
+GREEN = (0, 255, 0)
 GRAY = (50, 50, 50)
 
 # Car settings
@@ -31,23 +32,28 @@ class Car:
         self.y = y
         self.angle = angle # degrees
         self.speed = 0
-        self.max_speed = 4
+        self.max_speed = 100
         self.acceleration = 0.1
         self.friction = 0.05
         self.rotation_speed = 2
         self.width = CAR_WIDTH
         self.height = CAR_HEIGHT
+        self.collider_buffer = 100
 
         # Create a base surface for the car
         self.original_image = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         self.original_image.fill(RED)
         self.image = self.original_image
-        self.rect = self.image.get_rect(center=(self.x, self.y))
+        self.rect = self.original_image.get_rect(center=(self.x, self.y))
+        self.mask = pygame.mask.from_surface(self.original_image)
 
-    def update(self):
-        rad = math.radians(self.angle)
-        self.x += math.sin(rad) * self.speed
-        self.y -= math.cos(rad) * self.speed
+    def update(self, dt):
+            """
+            Move the car by speed (px/sec) over dt (sec).
+            """
+            rad = math.radians(self.angle)
+            self.x += math.sin(rad) * self.speed * dt
+            self.y -= math.cos(rad) * self.speed * dt
 
     def draw(self, surface):
         # Rotate the image
@@ -107,53 +113,191 @@ class ObstacleManager:
             surface.blit(obs["surface"], obs["rect"].topleft)
 
 
-def steer_car(car):
-    if car.path_index >= len(car.path):
+def follow_path_exact(car):
+    """
+    Move the car instantly to the next waypoint on car.path.
+    Sets car.x, car.y, and car.angle to match the path exactly.
+    """
+    if car.path_index < len(car.path):
+        px, py, theta = car.path[car.path_index]
+        car.x = px
+        car.y = py
+        car.angle = math.degrees(theta)
+        car.path_index += 1
+    else:
+        # once we hit the end, stop or loop
+        car.path_index = len(car.path)  # clamp
+    return (car.x, car.y)
+
+import math
+
+def project_point_to_segment(px, py, x1, y1, x2, y2):
+    dx, dy = x2 - x1, y2 - y1
+    if dx == 0 and dy == 0:
+        return x1, y1
+    t = ((px - x1)*dx + (py - y1)*dy) / (dx*dx + dy*dy)
+    t = max(0, min(1, t))
+    return x1 + t*dx, y1 + t*dy
+
+def steer_car(car, lookahead=25, off_path_tol=10):
+    path = car.path
+    if not path:
         car.speed = 0
-        return
+        return None
 
-    # Get current waypoint
-    target = car.path[car.path_index]
-    print("TARGET", target, " Index:", car.path_index)
+    # 1) find the nearest projection on the polyline
+    best_d, best_proj, best_i = float('inf'), None, 0
+    for i in range(len(path)-1):
+        x1,y1,_ = path[i]
+        x2,y2,_ = path[i+1]
+        proj = project_point_to_segment(car.x, car.y, x1, y1, x2, y2)
+        d = math.hypot(car.x - proj[0], car.y - proj[1])
+        if d < best_d:
+            best_d, best_proj, best_i = d, proj, i
 
-    target_x, target_y, target_theta = target
-    dx = target_x - car.x
-    dy = target_y - car.y
-    distance = math.hypot(dx, dy)
+    # snap path_index so lookahead always marches forward
+    car.path_index = best_i
 
-    # Compute the desired angle (angle to next point)
-    desired_angle = math.degrees(target_theta)
-    angle_diff = (desired_angle - car.angle + 180) % 360 - 180
+    # 2) if you’re off-path, *immediately* head for the projection point
+    if best_d > off_path_tol:
+        target = best_proj
 
-    # Turn toward target heading (not just position)
-    if abs(angle_diff) > 2:
-        if angle_diff > 0:   
-            car.angle += car.rotation_speed
-        else:
-            car.angle -= car.rotation_speed
+    else:
+        # 3) otherwise pure-pursuit: march lookahead distance from best_proj
+        remaining = lookahead
+        last_x, last_y = best_proj
+        target = None
 
-    # Match final orientation (if near goal and last point)
-    if car.path_index == len(car.path) - 1:
-        goal_angle_diff = (math.degrees(target_theta) - car.angle + 180) % 360 - 180
-        if abs(goal_angle_diff) > 2:
-            if goal_angle_diff > 0:
-                car.angle += car.rotation_speed
-            else:
-                car.angle -= car.rotation_speed
+        for i in range(best_i, len(path)-1):
+            x1,y1,_ = path[i]
+            x2,y2,_ = path[i+1]
 
-    # Speed control
-    stopping_distance = (car.speed ** 2) / (2 * car.friction + 1e-5)
-    if distance <= stopping_distance:
+            # start this segment at the projection for the first
+            sx, sy = (last_x, last_y) if i == best_i else (x1, y1)
+            seg_len = math.hypot(x2 - sx, y2 - sy)
+
+            if seg_len >= remaining:
+                frac = remaining / seg_len
+                target = (sx + frac * (x2 - sx),
+                          sy + frac * (y2 - sy))
+                break
+
+            remaining -= seg_len
+            last_x, last_y = x2, y2
+            car.path_index = i+1
+
+        # if we ran out of path, aim at the final point
+        if target is None:
+            px, py, _ = path[-1]
+            target = (px, py)
+            car.path_index = len(path) - 1
+
+    # 4) compute steering angle to that target
+    dx, dy = target[0] - car.x, target[1] - car.y
+    desired = math.degrees(math.atan2(dy, dx))
+    delta = (desired - car.angle + 180) % 360 - 180
+    turn = max(-car.rotation_speed, min(car.rotation_speed, delta))
+    car.angle += turn
+
+    # 5) simple speed control (optional)
+    gx, gy, _ = path[-1]
+    dist_goal = math.hypot(gx - car.x, gy - car.y)
+    stopping = (car.speed**2) / (2*car.friction + 1e-5)
+    if dist_goal < stopping:
         car.speed = max(car.speed - car.friction, 0)
     else:
         car.speed = min(car.speed + car.acceleration, car.max_speed)
 
-    # Advance to next waypoint
-    LOOKAHEAD = 20
-    if distance < LOOKAHEAD and car.path_index < len(car.path) - 1:
-        car.path_index += 1
+    return target
 
-    car.update()
+
+def follow_trajectory(car: Car, dt,
+                      k_slow=0.3,
+                      lookahead_slow=40,
+                      min_speed_factor=1):
+    """
+    Trajectory follower with gentle CTE-based speed scaling.
+      - k_slow:   how aggressively to slow when off-track (try 0.1–0.5)
+      - lookahead_slow: CTE at which you’d start slowing significantly
+      - min_speed_factor: never go below this fraction of v_ref
+    """
+    # 1) advance your time-clock
+    car.t_curr = min(car.t_curr + dt, car.traj_ts[-1])
+
+    # 2) bracket t_curr
+    i = max(j for j, t in enumerate(car.traj_ts) if t <= car.t_curr)
+    i = min(i, len(car.traj_ts) - 2)
+    t0, t1 = car.traj_ts[i], car.traj_ts[i+1]
+    frac    = (car.t_curr - t0) / (t1 - t0 + 1e-9)
+
+    # 3) interp pose & speed
+    x0, y0, th0 = car.traj_pts[i]
+    x1, y1, th1 = car.traj_pts[i+1]
+    v0          = car.traj_vels[i]
+    v1          = car.traj_vels[i+1]
+
+    # unwrap heading
+    dth    = ((th1 - th0 + math.pi) % (2*math.pi)) - math.pi
+    x_ref  = x0 + frac * (x1 - x0)
+    y_ref  = y0 + frac * (y1 - y0)
+    th_ref = th0 + frac * dth
+    v_ref  = v0 + frac * (v1 - v0)
+
+    # 4) compute CTE
+    proj_x, proj_y = project_point_to_segment(car.x, car.y,
+                                              x0, y0, x1, y1)
+    cte = math.hypot(car.x - proj_x, car.y - proj_y)
+
+    # 5) compute speed factor, then clamp it
+    raw_factor = 1 - k_slow * (cte / lookahead_slow)
+    speed_factor = max(min_speed_factor, min(1.0, raw_factor))
+    v_ref_adj    = v_ref * speed_factor
+
+    # 6) directly match speed
+    car.speed = v_ref_adj
+
+    # 7) pure-pursuit steering on th_ref
+    desired = math.degrees(th_ref)
+    err     = (desired - car.angle + 180) % 360 - 180
+    turn    = max(-car.rotation_speed,
+                  min(car.rotation_speed, err))
+    car.angle += turn
+
+    # return the ref-point for your debug dot
+    return (x_ref, y_ref)
+
+
+
+def compute_trajectory(car):
+    # --- Trajectory time‐parameterization ---
+    # 1a) compute distances between consecutive waypoints
+    arc_d = [
+        math.hypot(x2-x1, y2-y1)
+        for (x1,y1,_),(x2,y2,_) in zip(car.path, car.path[1:])
+    ]
+
+    # 1b) cumulative arc‐length s_i
+    s_list = [0]
+    for d in arc_d:
+        s_list.append(s_list[-1] + d)
+
+    # 1c) choose a simple constant speed profile
+    v_max = car.max_speed
+    v_list = [v_max] * len(car.path)
+
+    # 1d) time stamps t_i from dt = ds / v_avg
+    t_list = [0]
+    for i in range(1, len(car.path)):
+        v_avg = 0.5 * (v_list[i-1] + v_list[i])
+        dt = arc_d[i-1] / (v_avg + 1e-6)
+        t_list.append(t_list[-1] + dt)
+
+    # stash on the car for your main loop
+    car.traj_pts = car.path       # [(x,y,theta),...]
+    car.traj_vels = v_list         # [v(s0), v(s1),...]
+    car.traj_ts = t_list         # [t0=0, t1, t2,...]
+    car.t_curr = 0.0
+
 
 
 def main():
@@ -161,16 +305,16 @@ def main():
     start_x = 100 # random.randint(0, WIDTH - CAR_HEIGHT) + CAR_HEIGHT
     start_y = 100 # random.randint(0, HEIGHT - CAR_HEIGHT) + CAR_HEIGHT
     start_angle = 180
-    car = Car(start_x, start_y, start_angle)
+    car: Car = Car(start_x, start_y, start_angle)
 
     #Init obstacles
     obstacles = ObstacleManager()
     obstacles.add_obstacle(WIDTH//2, HEIGHT//2, 100)
 
     # Init goal
-    goal_pos = (WIDTH - 100, HEIGHT - 100)
+    goal_pos = (WIDTH - 100, HEIGHT - 100, 180)
     # Init planner
-    planner = RRT(1000, obstacles, lims=np.array([[0, WIDTH], [0, HEIGHT]]), collision_func=is_in_collision)
+    planner = RRT(1000, obstacles, car, lims=np.array([[0, WIDTH], [0, HEIGHT], [0, 360]]), collision_func=is_in_collision, num_dimensions=3, connect_prob=.2)
     # Create plan
     start = (int(car.x), int(car.y), car.angle)
     plan, root = planner.plan(start, goal_pos)
@@ -181,72 +325,71 @@ def main():
         nodes_to_draw = dfs_collect_all_nodes(root)
         car.path = []
 
+    compute_trajectory(car)
+    trajectory_xy = [(pt[0], pt[1]) for pt in car.traj_pts]
+
+
+    nodes_to_draw = trajectory_xy
 
     car.path_index = 0
-    # print("PATH", car.path)
-    # print("TO DRAW:", nodes_to_draw)
     # Main loop
     running = True
     while running:
         screen.fill(WHITE)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
-            # Place obstacle with left click
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mx, my = pygame.mouse.get_pos()
-                obstacles.add_obstacle(mx, my)
-
         car.save_position()
-    
-        steer_car(car)
+
+        dt = clock.tick(FPS) / 1000.0
+        # target_point_to_draw = steer_car(car)
+        # target_point_to_draw = None
+        # follow_path_exact(car)
+        
+        target_point_to_draw = follow_trajectory(car, dt)
+
         # Apply movement update
-        car.update()
-        car.draw(screen)
-        pygame.draw.circle(screen, (0, 200, 0), goal_pos, GOAL_RADIUS)
+        car.update(dt)
 
-        for i in range(len(nodes_to_draw) - 1):
-            pygame.draw.line(
-                screen,
-                (0, 0, 255),  # Blue path
-                nodes_to_draw[i][:2],
-                nodes_to_draw[i + 1][:2],
-                2  # Thickness
-            )
-
-        obstacles.draw(screen)
-
+        # Collision correction before drawing
         for obs in obstacles.obstacles:
             offset = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
             if car.mask.overlap(obs["mask"], offset):
-                # Try moving only X, then only Y — keep the one that doesn't collide
                 car_x_before = car.x
                 car_y_before = car.y
 
                 # First try X only
                 car.x = car.prev_x
-                car.y = car_y_before
-                car.draw(screen)  # Need to update mask/rect
-                for obs in obstacles.obstacles:
-                    offset = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
-                    if car.mask.overlap(obs["mask"], offset):
-                        car.x = car_x_before  # X is bad
+                offset_x = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
+                if car.mask.overlap(obs["mask"], offset_x):
+                    car.x = car_x_before  # Revert X
 
                 # Then try Y only
                 car.y = car.prev_y
-                car.draw(screen)
-                for obs in obstacles.obstacles:
-                    offset = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
-                    if car.mask.overlap(obs["mask"], offset):
-                        car.y = car_y_before  # Y is bad
+                offset_y = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
+                if car.mask.overlap(obs["mask"], offset_y):
+                    car.y = car_y_before  # Revert Y
 
-                car.speed = 0  # Still stop the car from pushing in
-
+                car.speed = 0
                 break
 
+        # Draw everything
+        car.draw(screen)
+        pygame.draw.circle(screen, (0, 200, 0), goal_pos[:2], GOAL_RADIUS)
+
+        for i in range(len(nodes_to_draw) - 1):
+            pygame.draw.line(
+                screen, (0, 0, 255), nodes_to_draw[i][:2], nodes_to_draw[i + 1][:2], 2
+            )
+
+        if target_point_to_draw:
+            pygame.draw.circle(screen, GREEN, (int(target_point_to_draw[0]), int(target_point_to_draw[1])), 5)
+
+        obstacles.draw(screen)
+
         pygame.display.flip()
-        clock.tick(FPS)
 
     pygame.quit()
 
@@ -274,7 +417,7 @@ def dfs_collect_all_nodes(root):
     return visited
 
 
-def is_in_collision(state, obstacles):
+def is_in_collision(car: Car, state, obstacles):
     """
     Returns True if the car at [x, y, theta] would collide with any obstacle or go out of bounds.
     Otherwise, returns False.
@@ -286,7 +429,7 @@ def is_in_collision(state, obstacles):
         return True
 
     # Create a temporary car surface
-    car_surface = pygame.Surface((CAR_WIDTH, CAR_HEIGHT), pygame.SRCALPHA)
+    car_surface = pygame.Surface((car.width + car.collider_buffer, car.height + car.collider_buffer), pygame.SRCALPHA)
     car_surface.fill(RED)
 
     # Rotate the car
@@ -361,7 +504,7 @@ class RRTSearchTree:
         min_d = 1000000
         nn = self.root
         for n_i in self.nodes:
-            d = np.linalg.norm(s_query - n_i.state[:2])
+            d = np.linalg.norm(s_query - n_i.state)
             if d < min_d:
                 nn = n_i
                 min_d = d
@@ -406,7 +549,7 @@ class RRT(object):
     '''
     Rapidly-Exploring Random Tree Planner
     '''
-    def __init__(self, num_samples, obstacles, num_dimensions=2, step_length = 10, lims = None,
+    def __init__(self, num_samples, obstacles, robot, num_dimensions=2, step_length = 10, lims = None,
                  connect_prob = 0.05, collision_func=None):
         '''
         Initialize an RRT planning instance
@@ -416,6 +559,7 @@ class RRT(object):
         self.epsilon = step_length
         self.connect_prob = connect_prob
         self.obstacles = obstacles
+        self.robot = robot
 
         self.in_collision = collision_func
         if collision_func is None:
@@ -425,9 +569,8 @@ class RRT(object):
         self.limits = lims
         if self.limits is None:
             self.limits = []
-            for n in range(num_dimensions):
+            for n in range(num_dimensions-1):
                 self.limits.append([0,100])
-            self.limits = np.array(self.limits)
 
         self.ranges = self.limits[:,1] - self.limits[:,0]
         self.found_path = False
@@ -456,7 +599,7 @@ class RRT(object):
             state, node = self.extend(self.T, new_sample)
 
             if state == _REACHED:
-                distance = np.linalg.norm(self.goal - node.state[:2])
+                distance = np.linalg.norm(self.goal - node.state)
                 if distance <= self.epsilon:
                     # print("FOUND GOAL")
                     self.found_path = True
@@ -481,7 +624,7 @@ class RRT(object):
             return randoms
 
 
-    def extend(self, T, q):
+    def extend(self, T: RRTSearchTree, q):
         '''
         Perform rrt extend operation.
         q - new configuration to extend towards
@@ -495,14 +638,14 @@ class RRT(object):
         new_state = car_step_toward(nearest_node.state, q, self.epsilon)
         # print("NEAREST", nearest_node.state, " NEW STATE", new_state)
         # Check collision
-        if self.in_collision(new_state, self.obstacles):
+        if self.in_collision(self.robot, new_state, self.obstacles):
             return (_TRAPPED, T)
 
         new_node = TreeNode(new_state)
         T.add_node(new_node, nearest_node)
 
         # Check collision
-        if self.in_collision(new_state, self.obstacles):
+        if self.in_collision(self.robot, new_state, self.obstacles):
             return (_TRAPPED, T)
 
         # Add new step node
