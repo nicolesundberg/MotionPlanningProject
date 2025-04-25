@@ -13,7 +13,7 @@ pygame.display.set_caption("Autonomous Car Simulator")
 
 # Clock
 clock = pygame.time.Clock()
-FPS = 60
+FPS = 90
 
 # Colors
 WHITE = (255, 255, 255)
@@ -26,19 +26,122 @@ CAR_WIDTH, CAR_HEIGHT = 30, 50
 
 GOAL_RADIUS = 10
 
+MAP_0 = [(WIDTH//2, HEIGHT//2, 100)]
+MAP_1 = [(WIDTH//2 + 100, HEIGHT//2 - 100, 100), (WIDTH//2 - 100, HEIGHT//2 + 100, 100)]
+MAP_0 = [(WIDTH//2, HEIGHT//2, 100)]
+
+############### MAIN LOOP ######################
+
+def main():
+    # Init car random start
+    start_x = 100 # random.randint(0, WIDTH - CAR_HEIGHT) + CAR_HEIGHT
+    start_y = 100 # random.randint(0, HEIGHT - CAR_HEIGHT) + CAR_HEIGHT
+    start_angle = 180
+    car: Car = Car(start_x, start_y, start_angle)
+
+    #Init obstacles
+    obstacles = ObstacleManager()
+    for x, y, size in MAP_1:
+        obstacles.add_obstacle(x, y, size)
+
+    # Init goal
+    goal_pos = (WIDTH - 100, HEIGHT - 100, 180)
+    # Init planner
+    planner = RRT(1000, obstacles, car, lims=np.array([[0, WIDTH], [0, HEIGHT], [0, 360]]), collision_func=is_in_collision, num_dimensions=3, connect_prob=.2)
+
+    # Create plan
+    start = (int(car.x), int(car.y), car.angle)
+    plan, root = planner.plan(start, goal_pos)
+    if len(plan) > 0:
+        nodes_to_draw = dfs_collect_all_nodes(root)
+        car.path = plan
+    else:
+        nodes_to_draw = dfs_collect_all_nodes(root)
+        car.path = []
+
+    #
+    compute_trajectory(car)
+    trajectory_xy = [(pt[0], pt[1]) for pt in car.traj_pts]
+
+    #### option to draw only path
+    # nodes_to_draw = trajectory_xy
+
+    # Main loop
+    car.path_index = 0
+    running = True
+    screen_fill = WHITE
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        screen.fill(screen_fill)
+
+        # Save previous car position
+        car.save_position()
+
+        dt = clock.tick(FPS) / 1000.0
+
+        #### Compute new car position
+
+        # target_point_to_draw = steer_car(car)
+        # target_point_to_draw = None
+        # follow_path_exact(car)
+        
+        target_point_to_draw = follow_trajectory(car, dt)
+
+        # Check if goal was reached
+        gx, gy, _ = goal_pos
+        dist_to_goal = math.hypot(car.x - gx, car.y - gy)
+        if dist_to_goal <= GOAL_RADIUS + 20:
+            car.speed = 0
+            screen_fill = GREEN
+
+        # Apply movement update
+        car.update(dt)
+
+        # Collision correction before drawing
+        for obs in obstacles.obstacles:
+            offset = (obs["rect"].x - car.rect.x,
+                    obs["rect"].y - car.rect.y)
+            if car.mask.overlap(obs["mask"], offset):
+                car.rewind_position()
+                break
+
+        # Draw everything
+        car.draw(screen)
+        pygame.draw.circle(screen, (0, 200, 0), goal_pos[:2], GOAL_RADIUS)
+
+        for i in range(len(nodes_to_draw) - 1):
+            pygame.draw.line(
+                screen, (0, 0, 255), nodes_to_draw[i][:2], nodes_to_draw[i + 1][:2], 2
+            )
+
+        if target_point_to_draw:
+            pygame.draw.circle(screen, GREEN, (int(target_point_to_draw[0]), int(target_point_to_draw[1])), 5)
+        
+        obstacles.draw(screen)
+
+        pygame.display.flip()
+
+    pygame.quit()
+
+
+################# PATH FOLLOWING ##########################
+
 class Car:
     def __init__(self, x, y, angle):
         self.x = x
         self.y = y
         self.angle = angle # degrees
         self.speed = 0
-        self.max_speed = 100
+        self.max_speed = 40
         self.acceleration = 0.1
         self.friction = 0.05
         self.rotation_speed = 2
         self.width = CAR_WIDTH
         self.height = CAR_HEIGHT
-        self.collider_buffer = 100
+        self.collider_buffer = 20
 
         # Create a base surface for the car
         self.original_image = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
@@ -48,19 +151,22 @@ class Car:
         self.mask = pygame.mask.from_surface(self.original_image)
 
     def update(self, dt):
-            """
-            Move the car by speed (px/sec) over dt (sec).
-            """
-            rad = math.radians(self.angle)
-            self.x += math.sin(rad) * self.speed * dt
-            self.y -= math.cos(rad) * self.speed * dt
+        """
+        Move the car by speed (px/sec) over dt (sec), then
+        update its collision mask immediately.
+        """
+        # move
+        rad = math.radians(self.angle)
+        self.x += math.sin(rad) * self.speed * dt
+        self.y -= math.cos(rad) * self.speed * dt
+
+        # now rebuild image, rect, mask so collision sees the new pose
+        self.image = pygame.transform.rotate(self.original_image, -self.angle)
+        self.rect  = self.image.get_rect(center=(self.x, self.y))
+        self.mask  = pygame.mask.from_surface(self.image)
+
 
     def draw(self, surface):
-        # Rotate the image
-        self.image = pygame.transform.rotate(self.original_image, -self.angle)
-        self.rect = self.image.get_rect(center=(self.x, self.y))
-        self.mask = pygame.mask.from_surface(self.image)
-
         # Blit the car
         surface.blit(self.image, self.rect.topleft)
 
@@ -94,7 +200,7 @@ class Car:
     def rewind_position(self):
         self.x = self.prev_x
         self.y = self.prev_y
-        self.speed = 0  # Stop the car to prevent jitter
+        self.speed = 0 
 
 
 class ObstacleManager:
@@ -113,6 +219,93 @@ class ObstacleManager:
             surface.blit(obs["surface"], obs["rect"].topleft)
 
 
+def follow_trajectory(car: Car, dt,
+                      k_slow=0.3,
+                      lookahead_slow=40,
+                      min_speed_factor=1):
+    """
+    Trajectory follower with gentle CTE-based speed scaling.
+      - k_slow:   how aggressively to slow when off-track (try 0.1–0.5)
+      - lookahead_slow: CTE at which you’d start slowing significantly
+      - min_speed_factor: never go below this fraction of v_ref
+    """
+    # 1) advance your time-clock
+    car.t_curr = min(car.t_curr + dt, car.traj_ts[-1])
+
+    # 2) bracket t_curr
+    i = max(j for j, t in enumerate(car.traj_ts) if t <= car.t_curr)
+    i = min(i, len(car.traj_ts) - 2)
+    t0, t1 = car.traj_ts[i], car.traj_ts[i+1]
+    frac    = (car.t_curr - t0) / (t1 - t0 + 1e-9)
+
+    # 3) interp pose & speed
+    x0, y0, th0 = car.traj_pts[i]
+    x1, y1, th1 = car.traj_pts[i+1]
+    v0          = car.traj_vels[i]
+    v1          = car.traj_vels[i+1]
+
+    # unwrap heading
+    dth    = ((th1 - th0 + math.pi) % (2*math.pi)) - math.pi
+    x_ref  = x0 + frac * (x1 - x0)
+    y_ref  = y0 + frac * (y1 - y0)
+    th_ref = th0 + frac * dth
+    v_ref  = v0 + frac * (v1 - v0)
+
+    # 4) compute CTE
+    proj_x, proj_y = project_point_to_segment(car.x, car.y,
+                                              x0, y0, x1, y1)
+    cte = math.hypot(car.x - proj_x, car.y - proj_y)
+
+    # 5) compute speed factor, then clamp it
+    raw_factor = 1 - k_slow * (cte / lookahead_slow)
+    speed_factor = max(min_speed_factor, min(1.0, raw_factor))
+    v_ref_adj    = v_ref * speed_factor
+
+    # 6) directly match speed
+    car.speed = v_ref_adj
+
+    # 7) pure-pursuit steering on th_ref
+    desired = math.degrees(th_ref)
+    err     = (desired - car.angle + 180) % 360 - 180
+    turn    = max(-car.rotation_speed,
+                  min(car.rotation_speed, err))
+    car.angle += turn
+
+    # return the ref-point for your debug dot
+    return (x_ref, y_ref)
+
+
+def compute_trajectory(car):
+    # --- Trajectory time‐parameterization ---
+    # 1a) compute distances between consecutive waypoints
+    arc_d = [
+        math.hypot(x2-x1, y2-y1)
+        for (x1,y1,_),(x2,y2,_) in zip(car.path, car.path[1:])
+    ]
+
+    # 1b) cumulative arc‐length s_i
+    s_list = [0]
+    for d in arc_d:
+        s_list.append(s_list[-1] + d)
+
+    # 1c) choose a simple constant speed profile
+    v_max = car.max_speed
+    v_list = [v_max] * len(car.path)
+
+    # 1d) time stamps t_i from dt = ds / v_avg
+    t_list = [0]
+    for i in range(1, len(car.path)):
+        v_avg = 0.5 * (v_list[i-1] + v_list[i])
+        dt = arc_d[i-1] / (v_avg + 1e-6)
+        t_list.append(t_list[-1] + dt)
+
+    # stash on the car for your main loop
+    car.traj_pts = car.path       # [(x,y,theta),...]
+    car.traj_vels = v_list         # [v(s0), v(s1),...]
+    car.traj_ts = t_list         # [t0=0, t1, t2,...]
+    car.t_curr = 0.0
+
+
 def follow_path_exact(car):
     """
     Move the car instantly to the next waypoint on car.path.
@@ -129,6 +322,7 @@ def follow_path_exact(car):
         car.path_index = len(car.path)  # clamp
     return (car.x, car.y)
 
+
 import math
 
 def project_point_to_segment(px, py, x1, y1, x2, y2):
@@ -138,6 +332,7 @@ def project_point_to_segment(px, py, x1, y1, x2, y2):
     t = ((px - x1)*dx + (py - y1)*dy) / (dx*dx + dy*dy)
     t = max(0, min(1, t))
     return x1 + t*dx, y1 + t*dy
+
 
 def steer_car(car, lookahead=25, off_path_tol=10):
     path = car.path
@@ -211,188 +406,8 @@ def steer_car(car, lookahead=25, off_path_tol=10):
     return target
 
 
-def follow_trajectory(car: Car, dt,
-                      k_slow=0.3,
-                      lookahead_slow=40,
-                      min_speed_factor=1):
-    """
-    Trajectory follower with gentle CTE-based speed scaling.
-      - k_slow:   how aggressively to slow when off-track (try 0.1–0.5)
-      - lookahead_slow: CTE at which you’d start slowing significantly
-      - min_speed_factor: never go below this fraction of v_ref
-    """
-    # 1) advance your time-clock
-    car.t_curr = min(car.t_curr + dt, car.traj_ts[-1])
 
-    # 2) bracket t_curr
-    i = max(j for j, t in enumerate(car.traj_ts) if t <= car.t_curr)
-    i = min(i, len(car.traj_ts) - 2)
-    t0, t1 = car.traj_ts[i], car.traj_ts[i+1]
-    frac    = (car.t_curr - t0) / (t1 - t0 + 1e-9)
-
-    # 3) interp pose & speed
-    x0, y0, th0 = car.traj_pts[i]
-    x1, y1, th1 = car.traj_pts[i+1]
-    v0          = car.traj_vels[i]
-    v1          = car.traj_vels[i+1]
-
-    # unwrap heading
-    dth    = ((th1 - th0 + math.pi) % (2*math.pi)) - math.pi
-    x_ref  = x0 + frac * (x1 - x0)
-    y_ref  = y0 + frac * (y1 - y0)
-    th_ref = th0 + frac * dth
-    v_ref  = v0 + frac * (v1 - v0)
-
-    # 4) compute CTE
-    proj_x, proj_y = project_point_to_segment(car.x, car.y,
-                                              x0, y0, x1, y1)
-    cte = math.hypot(car.x - proj_x, car.y - proj_y)
-
-    # 5) compute speed factor, then clamp it
-    raw_factor = 1 - k_slow * (cte / lookahead_slow)
-    speed_factor = max(min_speed_factor, min(1.0, raw_factor))
-    v_ref_adj    = v_ref * speed_factor
-
-    # 6) directly match speed
-    car.speed = v_ref_adj
-
-    # 7) pure-pursuit steering on th_ref
-    desired = math.degrees(th_ref)
-    err     = (desired - car.angle + 180) % 360 - 180
-    turn    = max(-car.rotation_speed,
-                  min(car.rotation_speed, err))
-    car.angle += turn
-
-    # return the ref-point for your debug dot
-    return (x_ref, y_ref)
-
-
-
-def compute_trajectory(car):
-    # --- Trajectory time‐parameterization ---
-    # 1a) compute distances between consecutive waypoints
-    arc_d = [
-        math.hypot(x2-x1, y2-y1)
-        for (x1,y1,_),(x2,y2,_) in zip(car.path, car.path[1:])
-    ]
-
-    # 1b) cumulative arc‐length s_i
-    s_list = [0]
-    for d in arc_d:
-        s_list.append(s_list[-1] + d)
-
-    # 1c) choose a simple constant speed profile
-    v_max = car.max_speed
-    v_list = [v_max] * len(car.path)
-
-    # 1d) time stamps t_i from dt = ds / v_avg
-    t_list = [0]
-    for i in range(1, len(car.path)):
-        v_avg = 0.5 * (v_list[i-1] + v_list[i])
-        dt = arc_d[i-1] / (v_avg + 1e-6)
-        t_list.append(t_list[-1] + dt)
-
-    # stash on the car for your main loop
-    car.traj_pts = car.path       # [(x,y,theta),...]
-    car.traj_vels = v_list         # [v(s0), v(s1),...]
-    car.traj_ts = t_list         # [t0=0, t1, t2,...]
-    car.t_curr = 0.0
-
-
-
-def main():
-    # Init car random start
-    start_x = 100 # random.randint(0, WIDTH - CAR_HEIGHT) + CAR_HEIGHT
-    start_y = 100 # random.randint(0, HEIGHT - CAR_HEIGHT) + CAR_HEIGHT
-    start_angle = 180
-    car: Car = Car(start_x, start_y, start_angle)
-
-    #Init obstacles
-    obstacles = ObstacleManager()
-    obstacles.add_obstacle(WIDTH//2, HEIGHT//2, 100)
-
-    # Init goal
-    goal_pos = (WIDTH - 100, HEIGHT - 100, 180)
-    # Init planner
-    planner = RRT(1000, obstacles, car, lims=np.array([[0, WIDTH], [0, HEIGHT], [0, 360]]), collision_func=is_in_collision, num_dimensions=3, connect_prob=.2)
-    # Create plan
-    start = (int(car.x), int(car.y), car.angle)
-    plan, root = planner.plan(start, goal_pos)
-    if len(plan) > 0:
-        nodes_to_draw = dfs_collect_all_nodes(root)
-        car.path = plan
-    else:
-        nodes_to_draw = dfs_collect_all_nodes(root)
-        car.path = []
-
-    compute_trajectory(car)
-    trajectory_xy = [(pt[0], pt[1]) for pt in car.traj_pts]
-
-
-    nodes_to_draw = trajectory_xy
-
-    car.path_index = 0
-    # Main loop
-    running = True
-    while running:
-        screen.fill(WHITE)
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-        car.save_position()
-
-        dt = clock.tick(FPS) / 1000.0
-        # target_point_to_draw = steer_car(car)
-        # target_point_to_draw = None
-        # follow_path_exact(car)
-        
-        target_point_to_draw = follow_trajectory(car, dt)
-
-        # Apply movement update
-        car.update(dt)
-
-        # Collision correction before drawing
-        for obs in obstacles.obstacles:
-            offset = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
-            if car.mask.overlap(obs["mask"], offset):
-                car_x_before = car.x
-                car_y_before = car.y
-
-                # First try X only
-                car.x = car.prev_x
-                offset_x = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
-                if car.mask.overlap(obs["mask"], offset_x):
-                    car.x = car_x_before  # Revert X
-
-                # Then try Y only
-                car.y = car.prev_y
-                offset_y = (int(obs["rect"].x - car.rect.x), int(obs["rect"].y - car.rect.y))
-                if car.mask.overlap(obs["mask"], offset_y):
-                    car.y = car_y_before  # Revert Y
-
-                car.speed = 0
-                break
-
-        # Draw everything
-        car.draw(screen)
-        pygame.draw.circle(screen, (0, 200, 0), goal_pos[:2], GOAL_RADIUS)
-
-        for i in range(len(nodes_to_draw) - 1):
-            pygame.draw.line(
-                screen, (0, 0, 255), nodes_to_draw[i][:2], nodes_to_draw[i + 1][:2], 2
-            )
-
-        if target_point_to_draw:
-            pygame.draw.circle(screen, GREEN, (int(target_point_to_draw[0]), int(target_point_to_draw[1])), 5)
-
-        obstacles.draw(screen)
-
-        pygame.display.flip()
-
-    pygame.quit()
-
+################# RRT PLANNING ##########################
 
 _TRAPPED = 'trapped'
 _ADVANCED = 'advanced'
