@@ -7,7 +7,7 @@ class featureDetection:
     def __init__(self):
         #variables
         self.EPSILON = 10
-        self.DELTA = 20
+        self.DELTA = 501 #20
         self.SNUM = 6
         self.PMIN = 20
         self.GMAX = 20
@@ -160,52 +160,93 @@ class featureDetection:
 
         return False
 
+    # def seed_segment_growing(self, indices, break_point):
+    #     line_eq = self.LINE_PARAMS
+    #     i, j = indices
+    #     # beginning and final points in the line segment
+    #     PB, PF = max(break_point, i - 1), min(j+1, len(self.LASERPOINTS) - 1)
+    #
+    #
+    #     while self.dist_point2line(line_eq, self.LASERPOINTS[PF][0]) < self.EPSILON:
+    #         if PF > self.NP - 1:
+    #             break
+    #         else:
+    #             m, b = self.odr_fit(self.LASERPOINTS[PB:PF])
+    #             line_eq = self.lineForm_SI2G(m, b)
+    #
+    #             POINT = self.LASERPOINTS[PF][0]
+    #
+    #         PF = PF + 1
+    #         NEXTPOINT = self.LASERPOINTS[PF][0]
+    #         if self.dist_point2point(POINT, NEXTPOINT) > self.GMAX:
+    #             break
+    #
+    #     PF = PF - 1
+    #     while self.dist_point2line(line_eq, self.LASERPOINTS[PB][0]):
+    #         if PB < break_point:
+    #             break
+    #         else:
+    #             m, b = self.odr_fit(self.LASERPOINTS[PB:PF])
+    #             line_dq = self.lineForm_SI2G(m, b)
+    #             POINT = self.LASERPOINTS[PB][0]
+    #
+    #         PB = PB - 1
+    #         NEXTPOINT = self.LASERPOINTS[PB][0]
+    #         if self.dist_point2point(POINT, NEXTPOINT) > self.GMAX:
+    #             break
+    #     PB = PB + 1
+    #
+    #     LR = self.dist_point2point(self.LASERPOINTS[PB][0], self.LASERPOINTS[PF][0])
+    #     PR = len(self.LASERPOINTS[PB:PF])
+    #
+    #     if (LR >= self.LMIN) and (PR >= self.PMIN):
+    #         self.LINE_PARAMS = line_eq
+    #         m, b = self.lineForm_G2SI(line_eq[0], line_eq[1], line_eq[2])
+    #         self.two_points = self.line_2points(m, b)
+    #         self.LINE_SEGMENTS.append((self.LASERPOINTS[PB+1][0], self.LASERPOINTS[PF-1][0]))
+    #         return [self.LASERPOINTS[PB:PF], self.two_points,
+    #                 (self.LASERPOINTS[PB + 1][0], self.LASERPOINTS[PF-1][0]), PF, line_eq, (m,b)]
+    #     else:
+    #         return False
+
     def seed_segment_growing(self, indices, break_point):
         line_eq = self.LINE_PARAMS
         i, j = indices
-        # beginning and final points in the line segment
-        PB, PF = max(break_point, i - 1), min(j+1, len(self.LASERPOINTS) - 1)
-
+        NP = len(self.LASERPOINTS)
+        PB, PF = max(break_point, (i - 1) % NP), (j + 1) % NP
 
         while self.dist_point2line(line_eq, self.LASERPOINTS[PF][0]) < self.EPSILON:
-            if PF > self.NP - 1:
-                break
-            else:
-                m, b = self.odr_fit(self.LASERPOINTS[PB:PF])
-                line_eq = self.lineForm_SI2G(m, b)
-
-                POINT = self.LASERPOINTS[PF][0]
-
-            PF = PF + 1
+            m, b = self.odr_fit(self.LASERPOINTS[PB:PF] if PB < PF else self.LASERPOINTS[PB:] + self.LASERPOINTS[:PF])
+            line_eq = self.lineForm_SI2G(m, b)
+            POINT = self.LASERPOINTS[PF][0]
+            PF = (PF + 1) % NP
             NEXTPOINT = self.LASERPOINTS[PF][0]
             if self.dist_point2point(POINT, NEXTPOINT) > self.GMAX:
                 break
 
-        PF = PF - 1
-        while self.dist_point2line(line_eq, self.LASERPOINTS[PB][0]):
-            if PB < break_point:
-                break
-            else:
-                m, b = self.odr_fit(self.LASERPOINTS[PB:PF])
-                line_dq = self.lineForm_SI2G(m, b)
-                POINT = self.LASERPOINTS[PB][0]
+        PF = (PF - 1) % NP
 
-            PB = PB - 1
+        while self.dist_point2line(line_eq, self.LASERPOINTS[PB][0]) < self.EPSILON:
+            m, b = self.odr_fit(self.LASERPOINTS[PB:PF] if PB < PF else self.LASERPOINTS[PB:] + self.LASERPOINTS[:PF])
+            line_eq = self.lineForm_SI2G(m, b)
+            POINT = self.LASERPOINTS[PB][0]
+            PB = (PB - 1) % NP
             NEXTPOINT = self.LASERPOINTS[PB][0]
             if self.dist_point2point(POINT, NEXTPOINT) > self.GMAX:
                 break
-        PB = PB + 1
+
+        PB = (PB + 1) % NP
 
         LR = self.dist_point2point(self.LASERPOINTS[PB][0], self.LASERPOINTS[PF][0])
-        PR = len(self.LASERPOINTS[PB:PF])
-
+        PR = len(self.LASERPOINTS[PB:PF] if PB < PF else self.LASERPOINTS[PB:] + self.LASERPOINTS[:PF])
         if (LR >= self.LMIN) and (PR >= self.PMIN):
             self.LINE_PARAMS = line_eq
             m, b = self.lineForm_G2SI(line_eq[0], line_eq[1], line_eq[2])
             self.two_points = self.line_2points(m, b)
-            self.LINE_SEGMENTS.append((self.LASERPOINTS[PB+1][0], self.LASERPOINTS[PF-1][0]))
-            return [self.LASERPOINTS[PB:PF], self.two_points,
-                    (self.LASERPOINTS[PB + 1][0], self.LASERPOINTS[PF-1][0]), PF, line_eq, (m,b)]
+            self.LINE_SEGMENTS.append((self.LASERPOINTS[(PB + 1) % NP][0], self.LASERPOINTS[(PF - 1) % NP][0]))
+            return [self.LASERPOINTS[PB:PF] if PB < PF else self.LASERPOINTS[PB:] + self.LASERPOINTS[:PF],
+                    self.two_points, (self.LASERPOINTS[(PB + 1) % NP][0], self.LASERPOINTS[(PF - 1) % NP][0]),
+                    PF, line_eq, (m, b)]
         else:
             return False
 

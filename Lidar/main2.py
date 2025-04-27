@@ -19,6 +19,9 @@ running = True
 FEATURE_DETECTION = True
 BREAK_POINT_IND = 0
 
+all_line_segments = []
+all_lines = []
+
 while running:
     environment.infomap = originalMap.copy()
     FEATURE_DETECTION = True
@@ -36,15 +39,24 @@ while running:
         elif not pygame.mouse.get_focused():
             sensorON=False
 
+    for point in all_line_segments:
+        environment.infomap.set_at((int(point[0][0]), int(point[0][1])), (0, 255, 0))
+        pygame.draw.circle(environment.infomap, COLOR, (int(point[0][0]), int(point[0][1])), 2, 0)
+    # all_lines.append(ENDPOINTS)
+    for line in all_lines:
+        pygame.draw.line(environment.infomap, (255, 0, 0), line[0], line[1], 2)
+
     if sensorON:
         position = pygame.mouse.get_pos()
         laser.position=position
         sensor_data = laser.sense_obstacles()
 
         FeatureMAP.laser_points_set(sensor_data)
+
         while BREAK_POINT_IND < (FeatureMAP.NP - FeatureMAP.PMIN):
             seedSeg = FeatureMAP.seed_segment_detection(laser.position,BREAK_POINT_IND)
             if seedSeg == False:
+
                 break
             else:
                 seedSegment = seedSeg[0]
@@ -65,10 +77,13 @@ while running:
                     ENDPOINTS[1] = FeatureMAP.projection_point2line(OUTERMOST[1], m, c)
 
                     COLOR = random_color()
-                    for point in line_seg:
+                    all_line_segments.extend(line_seg)
+                    for point in all_line_segments:
                         environment.infomap.set_at((int(point[0][0]), int(point[0][1])), (0,255,0))
                         pygame.draw.circle(environment.infomap,COLOR,(int(point[0][0]), int(point[0][1])), 2, 0)
-                    pygame.draw.line(environment.infomap, (255,0,0), ENDPOINTS[0], ENDPOINTS[1], 2)
+                    all_lines.append(ENDPOINTS)
+                    for line in all_lines:
+                        pygame.draw.line(environment.infomap, (255,0,0), line[0], line[1], 2)
 
                     environment.dataStorage(sensor_data)
                     # environment.show_sensorData()
