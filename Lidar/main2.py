@@ -23,7 +23,7 @@ while running:
     environment.infomap = originalMap.copy()
     FEATURE_DETECTION = True
     BREAK_POINT_IND = 0
-    ENDPOINTS = [0.0]
+    ENDPOINTS = [0,0]
     sensorON=False
     PREDICTED_POINTS_TODRAW = []
 
@@ -67,7 +67,7 @@ while running:
                     COLOR = random_color()
                     for point in line_seg:
                         environment.infomap.set_at((int(point[0][0]), int(point[0][1])), (0,255,0))
-                        pygame.draw.circle(environment.infomap,COLOR,(int(point[0][0], int(point[0][1])), 2, 0))
+                        pygame.draw.circle(environment.infomap,COLOR,(int(point[0][0]), int(point[0][1])), 2, 0)
                     pygame.draw.line(environment.infomap, (255,0,0), ENDPOINTS[0], ENDPOINTS[1], 2)
 
                     environment.dataStorage(sensor_data)

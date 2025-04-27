@@ -5,13 +5,13 @@ from Lidar import env, sensors
 import pygame
 import math
 
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.spatial import ConvexHull
-from sklearn.cluster import DBSCAN
-
-# import pip install opencv-pythoncv2
-import cv2
+# import numpy as np
+# import matplotlib.pyplot as plt
+# from scipy.spatial import ConvexHull
+# from sklearn.cluster import DBSCAN
+#
+# # import pip install opencv-pythoncv2
+# import cv2
 
 environment = env.buildEnvironment((600, 1200))
 

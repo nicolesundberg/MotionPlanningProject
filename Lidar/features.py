@@ -7,7 +7,7 @@ class featureDetection:
     def __init__(self):
         #variables
         self.EPSILON = 10
-        self.DELTA = 501
+        self.DELTA = 20
         self.SNUM = 6
         self.PMIN = 20
         self.GMAX = 20
@@ -105,8 +105,8 @@ class featureDetection:
         return m * x + b
 
     def odr_fit(self, laser_points):
-        x = np.array(i[0][0] for i in laser_points)
-        y = np.array(i[0][1] for i in laser_points)
+        x = np.array([i[0][0] for i in laser_points])
+        y = np.array([i[0][1] for i in laser_points])
 
         #create a model for fitting
         linear_model = Model(self.linear_func)
@@ -197,7 +197,7 @@ class featureDetection:
         PB = PB + 1
 
         LR = self.dist_point2point(self.LASERPOINTS[PB][0], self.LASERPOINTS[PF][0])
-        PR = len(self.LASERPOINT[PB:PF])
+        PR = len(self.LASERPOINTS[PB:PF])
 
         if (LR >= self.LMIN) and (PR >= self.PMIN):
             self.LINE_PARAMS = line_eq
