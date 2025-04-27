@@ -13,7 +13,9 @@ laser=sensors.LaserSensor(200,originalMap, uncertainty=(0.5,0.01))
 environment.map.fill((255,255,255))
 environment.infomap = environment.map.copy()
 #??
+environment.map.fill((0,0,0))
 
+pygame.display.set_caption('Feature detection using lidar')
 
 running = True
 FEATURE_DETECTION = True
@@ -29,6 +31,7 @@ while running:
     ENDPOINTS = [0,0]
     sensorON=False
     PREDICTED_POINTS_TODRAW = []
+    environment.map.fill((0, 0, 0))
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
