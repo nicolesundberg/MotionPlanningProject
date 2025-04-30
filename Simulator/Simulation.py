@@ -27,7 +27,7 @@ CAR_WIDTH, CAR_HEIGHT = 30, 50
 GOAL_RADIUS = 10
 
 MAP_0 = [(WIDTH//2, HEIGHT//2, 100)]
-MAP_1 = [(WIDTH//2 + 100, HEIGHT//2 - 100, 100), (WIDTH//2 - 100, HEIGHT//2 + 100, 100)]
+MAP_1 = [(WIDTH//2 + 75, HEIGHT//2 - 75, 100), (WIDTH//2 - 75, HEIGHT//2 + 75, 100)]
 MAP_0 = [(WIDTH//2, HEIGHT//2, 100)]
 
 ############### MAIN LOOP ######################
@@ -70,43 +70,49 @@ def main():
     car.path_index = 0
     running = True
     screen_fill = WHITE
+    started = False
+    target_point_to_draw = None
     while running:
+        dt = clock.tick(FPS) / 1000.0
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    started = True
+        
 
         screen.fill(screen_fill)
+        if started:
+            # Save previous car position
+            car.save_position()
 
-        # Save previous car position
-        car.save_position()
 
-        dt = clock.tick(FPS) / 1000.0
+            #### Compute new car position and follow path
 
-        #### Compute new car position
+            # target_point_to_draw = steer_car(car)
+            # target_point_to_draw = None
+            # follow_path_exact(car)
+            
+            target_point_to_draw = follow_trajectory(car, dt)
 
-        # target_point_to_draw = steer_car(car)
-        # target_point_to_draw = None
-        # follow_path_exact(car)
-        
-        target_point_to_draw = follow_trajectory(car, dt)
+            # Check if goal was reached
+            gx, gy, _ = goal_pos
+            dist_to_goal = math.hypot(car.x - gx, car.y - gy)
+            if dist_to_goal <= GOAL_RADIUS + 20:
+                car.speed = 0
+                screen_fill = GREEN
 
-        # Check if goal was reached
-        gx, gy, _ = goal_pos
-        dist_to_goal = math.hypot(car.x - gx, car.y - gy)
-        if dist_to_goal <= GOAL_RADIUS + 20:
-            car.speed = 0
-            screen_fill = GREEN
+            # Apply movement update
+            car.update(dt)
 
-        # Apply movement update
-        car.update(dt)
-
-        # Collision correction before drawing
-        for obs in obstacles.obstacles:
-            offset = (obs["rect"].x - car.rect.x,
-                    obs["rect"].y - car.rect.y)
-            if car.mask.overlap(obs["mask"], offset):
-                car.rewind_position()
-                break
+            # Collision correction before drawing
+            for obs in obstacles.obstacles:
+                offset = (obs["rect"].x - car.rect.x,
+                        obs["rect"].y - car.rect.y)
+                if car.mask.overlap(obs["mask"], offset):
+                    car.rewind_position()
+                    break
 
         # Draw everything
         car.draw(screen)
